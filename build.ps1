@@ -3,7 +3,8 @@
 # ./build.ps1 [-OneFile]
 
 param(
-    [switch]$OneFile
+    [switch]$OneFile,
+    [string]$Icon
 )
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -53,6 +54,16 @@ if (Test-Path $packagesDir) {
     Write-Host "No ./packages directory found." -ForegroundColor Yellow
 }
 
+$iconArg = $null
+if ($Icon) {
+    if (-not (Test-Path $Icon)) {
+        Write-Host "Icon file '$Icon' not found; continuing without icon." -ForegroundColor Yellow
+    } else {
+        Write-Host "Using icon: $Icon"
+        $iconArg = $Icon
+    }
+}
+
 # Build pyinstaller command
 $baseName = 'YouTubeDownloader'
 $pyArgs = @()
@@ -63,6 +74,10 @@ if ($OneFile) {
 }
 $pyArgs += '--noconsole'
 $pyArgs += "--name $baseName"
+
+if ($iconArg) {
+    $pyArgs += "--icon $iconArg"
+}
 
 foreach ($b in $addBinaries) {
     $pyArgs += "--add-binary"
@@ -81,3 +96,14 @@ Write-Host "Running: $cmd"
 Invoke-Expression $cmd
 
 Write-Host "Build finished. See dist\$baseName for the output." -ForegroundColor Green
+# If an icon was provided, copy it into the dist folder for the installer to use
+if ($iconArg) {
+    $distIconDest = Join-Path -Path (Join-Path $projectRoot "dist\$baseName") -ChildPath (Split-Path $iconArg -Leaf)
+    if (Test-Path $distIconDest) { Remove-Item $distIconDest -Force }
+    try {
+        Copy-Item -Path $iconArg -Destination $distIconDest -ErrorAction Stop
+        Write-Host "Copied icon to: $distIconDest" -ForegroundColor Green
+    } catch {
+        Write-Host "Failed to copy icon into dist folder: $_" -ForegroundColor Yellow
+    }
+}
