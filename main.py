@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import logging
 import re
 import importlib
+import sys
 try:
     yt_dlp = importlib.import_module("yt_dlp")
     HAS_YTDLP = True
@@ -45,6 +46,43 @@ def get_video_formats(url, callback):
         logging.exception("Gagal mengambil format video")
         # Jangan panggil GUI dari thread worker; cukup laporkan kosong ke callback
         callback([])
+
+
+def find_ffmpeg():
+    """Return a path to ffmpeg executable if found, otherwise None.
+    Search order:
+    - environment variable `YTDL_FFMPEG`
+    - PyInstaller _MEIPASS temporary folder
+    - local ./ffmpeg/ffmpeg(.exe)
+    - system PATH via shutil.which
+    """
+    # 1) explicit env override
+    env_path = os.environ.get('YTDL_FFMPEG')
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    # 2) PyInstaller onefile/_MEIPASS
+    try:
+        meipass = getattr(sys, '_MEIPASS', None)
+    except Exception:
+        meipass = None
+    if meipass:
+        candidate = os.path.join(meipass, 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+        if os.path.isfile(candidate):
+            return candidate
+
+    # 3) local bundled folder next to script
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(here, 'ffmpeg', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if os.path.isfile(candidate):
+        return candidate
+
+    # 4) system PATH
+    which = shutil.which('ffmpeg')
+    if which:
+        return which
+
+    return None
 
 # ===============================
 # Fungsi download
@@ -123,6 +161,13 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
             'noplaylist': True,
             'progress_hooks': [progress_hook],
         }
+        # If ffmpeg bundled/found, tell yt_dlp where it is (helps when app is bundled)
+        try:
+            ff = find_ffmpeg()
+            if ff:
+                ydl_opts['ffmpeg_location'] = ff
+        except Exception:
+            logging.exception("Gagal menentukan lokasi ffmpeg untuk yt_dlp")
         if mode == "mp3":
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
@@ -165,7 +210,18 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
 
     # Gunakan Popen untuk membaca output progress secara real-time
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        # If we have a bundled ffmpeg, ensure the subprocess inherits PATH that includes it
+        env = None
+        try:
+            ff = find_ffmpeg()
+            if ff:
+                env = os.environ.copy()
+                env_dir = os.path.dirname(ff)
+                env['PATH'] = env_dir + os.pathsep + env.get('PATH', '')
+        except Exception:
+            logging.exception("Gagal menambahkan ffmpeg ke PATH untuk subprocess")
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
         # Simpan handle proses ke app agar bisa dibatalkan
         if ui_app is not None:
             try:
@@ -410,8 +466,15 @@ class YouTubeDownloaderApp:
             for c in range(cols):
                 self.res_frame.columnconfigure(c, weight=1)
         else:
-            self._no_format_label = tk.Label(self.res_frame, text="Tidak ada format video MP4 tersedia")
-            self._no_format_label.grid(row=1, column=0, padx=10, pady=5, sticky="w")
+            # Tampilkan pesan terpusat bila tidak ada format
+            # Pastikan ada dua kolom agar label bisa mengambil ruang tengah
+            for c in range(2):
+                try:
+                    self.res_frame.columnconfigure(c, weight=1)
+                except Exception:
+                    pass
+            self._no_format_label = tk.Label(self.res_frame, text="Tidak ada format video MP4 tersedia", anchor='center', justify='center', fg='gray')
+            self._no_format_label.grid(row=1, column=0, columnspan=2, padx=10, pady=5)
 
     def start_download(self):
         url = self.url.get().strip()
