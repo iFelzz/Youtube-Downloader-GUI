@@ -8,6 +8,16 @@ import shutil
 from urllib.parse import urlparse
 import logging
 
+# Setup basic logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('ytdl_gui.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 # ===============================
 # Fungsi untuk ambil format video
 # ===============================
@@ -146,6 +156,13 @@ class YouTubeDownloaderApp:
             self.progress.grid_forget()
         except Exception:
             pass
+        # Jika ada label 'no format', hancurkan juga saat beralih mode
+        if hasattr(self, "_no_format_label") and self._no_format_label:
+            try:
+                self._no_format_label.destroy()
+            except Exception:
+                pass
+            self._no_format_label = None
 
         if self.mode.get() == "mp4":
             url = self.url.get().strip()
