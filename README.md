@@ -32,8 +32,8 @@ yt-dlp --version
 python .\main.py
 ```
 
-2. Paste a YouTube URL, pilih mode MP3 atau MP4, pilih folder output.
-3. For MP4: klik mode MP4, pilih resolusi dari daftar, lalu klik `Download`.
+2. Paste a YouTube URL, choose mode MP3 or MP4, choose folder output.
+3. For MP4: click mode MP4, choose resolution from list, and click `Download`.
 
 ## Logging
 
