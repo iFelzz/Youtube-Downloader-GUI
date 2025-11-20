@@ -1,3 +1,10 @@
+"""YouTube Downloader GUI
+
+Tiny Tkinter GUI wrapper around yt-dlp. This module contains the GUI class and
+download helpers that prefer the `yt_dlp` Python API and fall back to the
+`yt-dlp` executable when needed.
+"""
+
 import os
 import subprocess
 import tkinter as tk
@@ -5,7 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 import json
 import threading
 import shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl
 import logging
 import re
 import importlib
@@ -16,6 +23,10 @@ try:
 except Exception:
     yt_dlp = None
     HAS_YTDLP = False
+
+
+class DownloadCancelled(Exception):
+    """Raised internally when the user cancels a download."""
 
 # Setup basic logging to file
 logging.basicConfig(
@@ -32,17 +43,16 @@ logging.basicConfig(
 # ===============================
 def get_video_formats(url, callback):
     try:
-        result = subprocess.run(
-            ["yt-dlp", "-J", url],
-            capture_output=True,
-            text=True
-        )
+        # Use --no-playlist to avoid expanding playlist URLs and check=True to raise on errors
+        result = subprocess.run(["yt-dlp", "--no-playlist", "-J", url], capture_output=True, text=True, check=True)
         data = json.loads(result.stdout)
         formats = data.get("formats", [])
-        video_formats = [f for f in formats if f.get("vcodec") != "none" and f.get("ext") == "mp4"]
+        video_formats = [
+            f for f in formats if f.get("vcodec") != "none" and f.get("ext") == "mp4"
+        ]
         heights = sorted(set(f.get("height") for f in video_formats if f.get("height") is not None))
         callback(heights)
-    except Exception as e:
+    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError, OSError):
         logging.exception("Gagal mengambil format video")
         # Jangan panggil GUI dari thread worker; cukup laporkan kosong ke callback
         callback([])
@@ -88,6 +98,19 @@ def find_ffmpeg():
 # Fungsi download
 # ===============================
 def download(url, output_folder, mode, height=None, ui_app=None, done_callback=None):
+    # Sanitize URL to remove playlist query params (e.g. list=..., index=...)
+    try:
+        parsed = urlparse(url)
+        if parsed.query:
+            qs = parse_qsl(parsed.query, keep_blank_values=True)
+            qs = [(k, v) for (k, v) in qs if k.lower() not in ('list', 'index')]
+            if qs:
+                url = urlunparse(parsed._replace(query='&'.join([f"{k}={v}" for k, v in qs])))
+            else:
+                url = urlunparse(parsed._replace(query=''))
+    except Exception:
+        logging.exception("Failed to sanitize URL; proceeding with original")
+    
     # Prefer Python API of yt_dlp if available
     if HAS_YTDLP:
         # Prepare format
@@ -115,42 +138,29 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
                     if perc is not None and ui_app and hasattr(ui_app, "root"):
                         def _set_val(p=perc, s=speed):
                             try:
-                                # Switch to determinate on first progress
-                                ui_app.download_progress.config(mode='determinate', maximum=100)
-                                ui_app.download_progress['value'] = p
-                                # Update percent label
-                                try:
-                                    if hasattr(ui_app, '_progress_pct_label') and ui_app._progress_pct_label:
-                                        ui_app._progress_pct_label.config(text=f"{p:.1f}%")
-                                except Exception:
-                                    logging.exception("Gagal update label persen")
-                                # Update speed label
-                                try:
-                                    txt = ''
-                                    if s:
-                                        try:
-                                            ss = float(s)
-                                        except Exception:
-                                            ss = None
-                                        if ss is not None:
-                                            units = ['B/s','KiB/s','MiB/s','GiB/s']
-                                            i = 0
-                                            while ss >= 1024 and i < len(units)-1:
-                                                ss /= 1024.0
-                                                i += 1
-                                            txt = f"{ss:.2f} {units[i]}"
-                                        else:
-                                            txt = str(s)
-                                    if hasattr(ui_app, '_progress_speed_label') and ui_app._progress_speed_label:
-                                        ui_app._progress_speed_label.config(text=txt)
-                                except Exception:
-                                    logging.exception("Gagal update label speed")
+                                # Build speed text
+                                txt = ''
+                                if s:
+                                    try:
+                                        ss = float(s)
+                                    except Exception:
+                                        ss = None
+                                    if ss is not None:
+                                        units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s']
+                                        i = 0
+                                        while ss >= 1024 and i < len(units) - 1:
+                                            ss /= 1024.0
+                                            i += 1
+                                        txt = f"{ss:.2f} {units[i]}"
+                                    else:
+                                        txt = str(s)
+                                ui_app.set_progress(percent=p, speed_text=txt)
                             except Exception:
                                 logging.exception("Gagal update progress via API")
                         ui_app.root.after(0, _set_val)
                 # cancellation
                 if ui_app and getattr(ui_app, '_download_cancelled', False):
-                    raise Exception("Download dibatalkan oleh pengguna")
+                    raise DownloadCancelled("Download dibatalkan oleh pengguna")
             # saat selesai, biarkan done_callback/on_download_finished yang menampilkan notifikasi
             elif status == "finished":
                 pass
@@ -198,14 +208,14 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
         return
 
     if mode == "mp3":
-        cmd = ["yt-dlp", "-x", "--audio-format", "mp3",
+        cmd = ["yt-dlp", "--no-playlist", "-x", "--audio-format", "mp3",
                "-o", os.path.join(output_folder, "%(title)s.%(ext)s"), url]
     else:  # mp4
         if height:
             fmt = f"bestvideo[height={height}]+bestaudio/best"
         else:
             fmt = "bestvideo+bestaudio/best"
-        cmd = ["yt-dlp", "-f", fmt,
+        cmd = ["yt-dlp", "--no-playlist", "-f", fmt,
                "-o", os.path.join(output_folder, "%(title)s.%(ext)s"), url]
 
     # Gunakan Popen untuk membaca output progress secara real-time
@@ -261,22 +271,10 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
                                     ui_app.download_progress.stop()
                                 except Exception:
                                     pass
-                                ui_app.download_progress.config(mode='determinate', maximum=100)
-                                ui_app.download_progress['value'] = p
-                                # update percent label
-                                try:
-                                    if hasattr(ui_app, '_progress_pct_label') and ui_app._progress_pct_label:
-                                        ui_app._progress_pct_label.config(text=f"{p:.1f}%")
-                                except Exception:
-                                    logging.exception("Gagal update label persen")
-                                # update speed label if available
-                                try:
-                                    sm = speed_re.search(line)
-                                    sp_txt = sm.group(1) if sm else ''
-                                    if hasattr(ui_app, '_progress_speed_label') and ui_app._progress_speed_label:
-                                        ui_app._progress_speed_label.config(text=sp_txt)
-                                except Exception:
-                                    logging.exception("Gagal update label speed")
+                                # compute speed text
+                                sm = speed_re.search(line)
+                                sp_txt = sm.group(1) if sm else ''
+                                ui_app.switch_to_determinate(percent=p, speed_text=sp_txt)
                             except Exception:
                                 logging.exception("Gagal beralih ke determinate")
                         ui_app.root.after(0, _switch_to_determinate)
@@ -285,19 +283,9 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
                     if ui_app and hasattr(ui_app, "root"):
                         def _set_val(p=perc):
                             try:
-                                ui_app.download_progress['value'] = p
-                                try:
-                                    if hasattr(ui_app, '_progress_pct_label') and ui_app._progress_pct_label:
-                                        ui_app._progress_pct_label.config(text=f"{p:.1f}%")
-                                except Exception:
-                                    logging.exception("Gagal update label persen")
-                                try:
-                                    sm = speed_re.search(line)
-                                    sp_txt = sm.group(1) if sm else ''
-                                    if hasattr(ui_app, '_progress_speed_label') and ui_app._progress_speed_label:
-                                        ui_app._progress_speed_label.config(text=sp_txt)
-                                except Exception:
-                                    logging.exception("Gagal update label speed")
+                                sm = speed_re.search(line)
+                                sp_txt = sm.group(1) if sm else ''
+                                ui_app.set_progress(percent=p, speed_text=sp_txt)
                             except Exception:
                                 logging.exception("Gagal update progress bar")
                         ui_app.root.after(0, _set_val)
@@ -345,6 +333,9 @@ class YouTubeDownloaderApp:
         self._no_format_label = None
         self._download_proc = None
         self._download_cancelled = False
+        # Progress labels created lazily in the popup; define here to satisfy linters
+        self._progress_pct_label = None
+        self._progress_speed_label = None
 
         # URL
         tk.Label(root, text="URL YouTube:").pack(pady=5)
@@ -383,6 +374,43 @@ class YouTubeDownloaderApp:
 
         self.download_button = tk.Button(btn_frame, text="Download", command=self.start_download)
         self.download_button.pack(side="left", padx=5)
+
+    def set_progress(self, percent=None, speed_text=None):
+        """Safely update progress UI from any thread by scheduling on the main loop.
+
+        percent: float or None
+        speed_text: str or None
+        """
+        def _update():
+            try:
+                if percent is not None:
+                    if self.download_progress:
+                        try:
+                            self.download_progress.config(mode='determinate', maximum=100)
+                            self.download_progress['value'] = percent
+                        except Exception:
+                            logging.exception("Gagal update progressbar di set_progress")
+                    if self._progress_pct_label:
+                        try:
+                            self._progress_pct_label.config(text=f"{percent:.1f}%")
+                        except Exception:
+                            logging.exception("Gagal update pct label di set_progress")
+                if speed_text is not None and self._progress_speed_label is not None:
+                    try:
+                        self._progress_speed_label.config(text=speed_text)
+                    except Exception:
+                        logging.exception("Gagal update speed label di set_progress")
+            except Exception:
+                logging.exception("Error in set_progress UI update")
+
+        try:
+            self.root.after(0, _update)
+        except Exception:
+            logging.exception("Failed to schedule set_progress")
+
+    def switch_to_determinate(self, percent=0.0, speed_text=''):
+        """Convenience wrapper to switch the progress bar to determinate mode and set a value."""
+        self.set_progress(percent=percent, speed_text=speed_text)
 
     def clear_placeholder(self, event):
         if self.url_entry.get() == "Masukkan URL YouTube di sini...":
