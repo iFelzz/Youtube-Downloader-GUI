@@ -9,11 +9,8 @@ param(
 )
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$distDir = Join-Path $projectRoot 'dist\YouTubeDownloader'
-if (-not (Test-Path $distDir)) {
-    Write-Host "Dist folder not found: $distDir. Build the project first with build.ps1." -ForegroundColor Red
-    exit 1
-}
+$distFolder = Join-Path $projectRoot 'dist\YouTubeDownloader'
+$distExe = Join-Path $projectRoot 'dist\YouTubeDownloader.exe'
 
 if (-not $Version) {
     $Version = (Get-Date -Format yyyyMMddHHmmss)
@@ -27,10 +24,18 @@ $zipPath = Join-Path $releasesDir $zipName
 
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
-Write-Host "Creating release zip: $zipPath"
-Compress-Archive -Path (Join-Path $distDir '*') -DestinationPath $zipPath -Force
-
-Write-Host "Release created: $zipPath" -ForegroundColor Green
+if (Test-Path $distFolder) {
+    Write-Host "Creating release zip from folder: $distFolder -> $zipPath"
+    Compress-Archive -Path (Join-Path $distFolder '*') -DestinationPath $zipPath -Force
+    Write-Host "Release created: $zipPath" -ForegroundColor Green
+} elseif (Test-Path $distExe) {
+    Write-Host "Creating release zip from single-file exe: $distExe -> $zipPath"
+    Compress-Archive -Path $distExe -DestinationPath $zipPath -Force
+    Write-Host "Release created: $zipPath" -ForegroundColor Green
+} else {
+    Write-Host "Dist not found: neither folder '$distFolder' nor exe '$distExe' exist. Build first." -ForegroundColor Red
+    exit 1
+}
 
 # Optionally copy the installer if present
 $installer = Join-Path $projectRoot 'installer\Output\YouTubeDownloaderInstaller.exe'

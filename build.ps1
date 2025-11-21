@@ -4,7 +4,8 @@
 
 param(
     [switch]$OneFile,
-    [string]$Icon
+    [string]$Icon,
+    [string]$Version
 )
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -36,7 +37,8 @@ if (Test-Path $packagesDir) {
     if ($ffCandidate) {
         $ffPath = $ffCandidate.FullName
         Write-Host "Found ffmpeg at: $ffPath"
-        $addBinaries += "`"$ffPath`";.`"
+        # PyInstaller --add-binary expects source;destination (semicolon-separated)
+        $addBinaries += "$ffPath;."
     } else {
         Write-Host "No ffmpeg found under ./packages. PyInstaller will rely on system ffmpeg if available." -ForegroundColor Yellow
     }
@@ -46,7 +48,7 @@ if (Test-Path $packagesDir) {
     if ($ytdlpCandidate) {
         $ytdlpPath = $ytdlpCandidate.FullName
         Write-Host "Found yt-dlp executable at: $ytdlpPath"
-        $addBinaries += "`"$ytdlpPath`";.`"
+        $addBinaries += "$ytdlpPath;."
     } else {
         Write-Host "No yt-dlp executable found under ./packages. The packaged Python module will be used if available." -ForegroundColor Yellow
     }
@@ -72,28 +74,35 @@ if ($OneFile) {
 } else {
     $pyArgs += '--onedir'
 }
-$pyArgs += '--noconsole'
-$pyArgs += "--name $baseName"
 
+$pyArgs += '--noconsole'
+
+# name and icon should be separate args to avoid space-in-argument issues
+$pyArgs += '--name'
+$pyArgs += $baseName
 if ($iconArg) {
-    $pyArgs += "--icon $iconArg"
+    $pyArgs += '--icon'
+    $pyArgs += $iconArg
 }
 
 foreach ($b in $addBinaries) {
-    $pyArgs += "--add-binary"
+    $pyArgs += '--add-binary'
     $pyArgs += $b
 }
+
 # Ensure yt_dlp import is included
 $pyArgs += '--hidden-import'
 $pyArgs += 'yt_dlp'
 
+# Entry script
 $pyArgs += 'main.py'
 
-$cmd = "pyinstaller " + ($pyArgs -join ' ')
-Write-Host "Running: $cmd"
+# For logging/debug only, build a display string (does not affect execution)
+$cmdStr = 'pyinstaller ' + ($pyArgs -join ' ')
+Write-Host "Running: $cmdStr"
 
-# Execute
-Invoke-Expression $cmd
+# Execute pyinstaller with an argument array to avoid quoting issues
+& pyinstaller @pyArgs
 
 Write-Host "Build finished. See dist\$baseName for the output." -ForegroundColor Green
 # If an icon was provided, copy it into the dist folder for the installer to use

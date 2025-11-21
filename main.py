@@ -44,7 +44,22 @@ logging.basicConfig(
 def get_video_formats(url, callback):
     try:
         # Use --no-playlist to avoid expanding playlist URLs and check=True to raise on errors
-        result = subprocess.run(["yt-dlp", "--no-playlist", "-J", url], capture_output=True, text=True, check=True)
+        # On Windows, prevent a console window from briefly appearing when running yt-dlp
+        creation_flags = 0
+        startup_info = None
+        if os.name == 'nt':
+            try:
+                creation_flags = subprocess.CREATE_NO_WINDOW
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                startup_info = si
+            except Exception:
+                startup_info = None
+
+        result = subprocess.run([
+            "yt-dlp", "--no-playlist", "-J", url
+        ], capture_output=True, text=True, check=True, creationflags=creation_flags, startupinfo=startup_info)
         data = json.loads(result.stdout)
         formats = data.get("formats", [])
         video_formats = [
@@ -231,7 +246,20 @@ def download(url, output_folder, mode, height=None, ui_app=None, done_callback=N
         except Exception:
             logging.exception("Gagal menambahkan ffmpeg ke PATH untuk subprocess")
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+        # Ensure spawned yt-dlp subprocess doesn't create a visible console on Windows
+        creation_flags = 0
+        startup_info = None
+        if os.name == 'nt':
+            try:
+                creation_flags = subprocess.CREATE_NO_WINDOW
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                startup_info = si
+            except Exception:
+                startup_info = None
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env, creationflags=creation_flags, startupinfo=startup_info)
         # Simpan handle proses ke app agar bisa dibatalkan
         if ui_app is not None:
             try:
